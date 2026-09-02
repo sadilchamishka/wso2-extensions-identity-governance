@@ -159,6 +159,10 @@ public class UserProvisioningExecutor implements Executor {
 
             ExecutorConsentUtils.processUserConsent(COMPONENT_ID, context, user, userStoreDomainName);
 
+            if (INVITED_USER_REGISTRATION.getType().equalsIgnoreCase(context.getFlowType())) {
+                createFederatedAssociations(user, context.getTenantDomain(), context.getContextIdentifier());
+            }
+
             response.setResult(STATUS_COMPLETE);
             return response;
         } catch (UserStoreException e) {
