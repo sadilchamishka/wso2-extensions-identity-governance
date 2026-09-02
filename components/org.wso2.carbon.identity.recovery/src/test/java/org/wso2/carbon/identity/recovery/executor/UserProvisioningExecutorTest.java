@@ -18,6 +18,7 @@
 
 package org.wso2.carbon.identity.recovery.executor;
 
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.testng.annotations.AfterMethod;
@@ -87,6 +88,7 @@ import static org.wso2.carbon.identity.flow.execution.engine.Constants.ExecutorS
 import static org.wso2.carbon.identity.flow.execution.engine.Constants.ExecutorStatus.STATUS_USER_ERROR;
 import static org.wso2.carbon.identity.flow.execution.engine.Constants.PASSWORD_KEY;
 import static org.wso2.carbon.identity.flow.execution.engine.Constants.USERNAME_CLAIM_URI;
+import static org.wso2.carbon.identity.flow.mgt.Constants.FlowTypes.INVITED_USER_REGISTRATION;
 import static org.wso2.carbon.identity.flow.mgt.Constants.FlowTypes.PASSWORD_RECOVERY;
 import static org.wso2.carbon.identity.flow.mgt.Constants.FlowTypes.REGISTRATION;
 import static org.wso2.carbon.identity.recovery.IdentityRecoveryConstants.CONFIRMATION_CODE_INPUT;
@@ -128,6 +130,8 @@ public class UserProvisioningExecutorTest {
     @Mock
     private ApplicationManagementService applicationManagementService;
 
+    private FederatedAssociationManager federatedAssociationManager;
+
     @BeforeMethod
     public void setUp() throws IdentityApplicationManagementException {
 
@@ -143,6 +147,7 @@ public class UserProvisioningExecutorTest {
         mockedLoggerUtils = mockStatic(LoggerUtils.class);
         mockedLoggerUtils.when(LoggerUtils::isDiagnosticLogsEnabled).thenReturn(false);
         applicationManagementService = mock(ApplicationManagementService.class);
+        federatedAssociationManager = mock(FederatedAssociationManager.class);
     }
 
     @AfterMethod
@@ -1246,6 +1251,129 @@ public class UserProvisioningExecutorTest {
         }
     }
 
+    @Test
+    public void testExecuteInvitedUserRegistrationCreatesFederatedAssociations() throws Exception {
+
+        FlowExecutionContext context = mock(FlowExecutionContext.class);
+        FlowUser flowUser = createTestFlowUser(USERNAME);
+        Map<String, String> federatedAssociations = new HashMap<>();
+        federatedAssociations.put("testIdP", "testSubjectId");
+        when(flowUser.getFederatedAssociations()).thenReturn(federatedAssociations);
+        when(flowUser.getUserStoreDomain()).thenReturn(PRIMARY_DOMAIN);
+
+        when(context.getFlowType()).thenReturn(INVITED_USER_REGISTRATION.getType());
+        when(context.getFlowUser()).thenReturn(flowUser);
+        when(context.getUserInputData()).thenReturn(new HashMap<>());
+        when(context.getTenantDomain()).thenReturn(TENANT_DOMAIN);
+        when(context.getContextIdentifier()).thenReturn(CONTEXT_ID);
+        when(context.getProperty("isUsernamePatternValidationSkipped")).thenReturn(null);
+        when(context.getProperty(CONFIRMATION_CODE_INPUT)).thenReturn("valid-code");
+        when(context.getProperty(RECOVERY_SCENARIO)).thenReturn("ASK_PASSWORD");
+
+        User resolvedUser = new User();
+        resolvedUser.setUserName(USERNAME);
+        resolvedUser.setTenantDomain(TENANT_DOMAIN);
+        resolvedUser.setUserStoreDomain(PRIMARY_DOMAIN);
+
+        setupUserStoreManagerMocks();
+
+        IdentityContext identityContext = mock(IdentityContext.class);
+        when(identityContext.getCurrentFlow()).thenReturn(null);
+
+        try (MockedStatic<Utils> mockedUtils = mockStatic(Utils.class);
+             MockedStatic<IdentityContext> mockedIdentityContext = mockStatic(IdentityContext.class)) {
+
+            mockedUtils.when(() -> Utils.resolveUserFromContext(context)).thenReturn(resolvedUser);
+            mockedIdentityContext.when(IdentityContext::getThreadLocalIdentityContext).thenReturn(identityContext);
+
+            ExecutorResponse response = executor.execute(context);
+
+            assertEquals(response.getResult(), STATUS_COMPLETE);
+            ArgumentCaptor<User> localUserCaptor = ArgumentCaptor.forClass(User.class);
+            verify(federatedAssociationManager).createFederatedAssociation(localUserCaptor.capture(),
+                    eq("testIdP"), eq("testSubjectId"));
+            User localUser = localUserCaptor.getValue();
+            // The association is keyed on the domain-free username plus the user store domain.
+            assertEquals(localUser.getUserName(), USERNAME);
+            assertEquals(localUser.getUserStoreDomain(), PRIMARY_DOMAIN);
+            assertEquals(localUser.getTenantDomain(), TENANT_DOMAIN);
+        }
+    }
+
+    @Test
+    public void testExecuteInvitedUserRegistrationWithoutFederatedAssociations() throws Exception {
+
+        FlowExecutionContext context = mock(FlowExecutionContext.class);
+        FlowUser flowUser = createTestFlowUser(USERNAME);
+
+        when(context.getFlowType()).thenReturn(INVITED_USER_REGISTRATION.getType());
+        when(context.getFlowUser()).thenReturn(flowUser);
+        when(context.getUserInputData()).thenReturn(new HashMap<>());
+        when(context.getTenantDomain()).thenReturn(TENANT_DOMAIN);
+        when(context.getContextIdentifier()).thenReturn(CONTEXT_ID);
+        when(context.getProperty("isUsernamePatternValidationSkipped")).thenReturn(null);
+        when(context.getProperty(CONFIRMATION_CODE_INPUT)).thenReturn("valid-code");
+        when(context.getProperty(RECOVERY_SCENARIO)).thenReturn("ASK_PASSWORD");
+
+        User resolvedUser = new User();
+        resolvedUser.setUserName(USERNAME);
+        resolvedUser.setTenantDomain(TENANT_DOMAIN);
+        resolvedUser.setUserStoreDomain(PRIMARY_DOMAIN);
+
+        setupUserStoreManagerMocks();
+
+        IdentityContext identityContext = mock(IdentityContext.class);
+        when(identityContext.getCurrentFlow()).thenReturn(null);
+
+        try (MockedStatic<Utils> mockedUtils = mockStatic(Utils.class);
+             MockedStatic<IdentityContext> mockedIdentityContext = mockStatic(IdentityContext.class)) {
+
+            mockedUtils.when(() -> Utils.resolveUserFromContext(context)).thenReturn(resolvedUser);
+            mockedIdentityContext.when(IdentityContext::getThreadLocalIdentityContext).thenReturn(identityContext);
+
+            ExecutorResponse response = executor.execute(context);
+
+            assertEquals(response.getResult(), STATUS_COMPLETE);
+            verify(federatedAssociationManager, never()).createFederatedAssociation(any(User.class), anyString(),
+                    anyString());
+        }
+    }
+
+    @Test
+    public void testExecutePasswordRecoveryDoesNotCreateFederatedAssociations() throws Exception {
+
+        FlowExecutionContext context = mock(FlowExecutionContext.class);
+        FlowUser flowUser = createTestFlowUser(USERNAME);
+        Map<String, String> federatedAssociations = new HashMap<>();
+        federatedAssociations.put("testIdP", "testSubjectId");
+        when(flowUser.getFederatedAssociations()).thenReturn(federatedAssociations);
+        when(flowUser.getUserStoreDomain()).thenReturn(PRIMARY_DOMAIN);
+
+        when(context.getFlowType()).thenReturn(PASSWORD_RECOVERY.getType());
+        when(context.getFlowUser()).thenReturn(flowUser);
+        when(context.getUserInputData()).thenReturn(new HashMap<>());
+        when(context.getTenantDomain()).thenReturn(TENANT_DOMAIN);
+        when(context.getContextIdentifier()).thenReturn(CONTEXT_ID);
+        when(context.getProperty("isUsernamePatternValidationSkipped")).thenReturn(null);
+
+        setupUserStoreManagerMocks();
+
+        IdentityContext identityContext = mock(IdentityContext.class);
+        when(identityContext.getCurrentFlow()).thenReturn(null);
+
+        try (MockedStatic<IdentityContext> mockedIdentityContext = mockStatic(IdentityContext.class)) {
+
+            mockedIdentityContext.when(IdentityContext::getThreadLocalIdentityContext).thenReturn(identityContext);
+
+            ExecutorResponse response = executor.execute(context);
+
+            assertEquals(response.getResult(), STATUS_COMPLETE);
+            // Associations are only persisted for the invited user registration flow.
+            verify(federatedAssociationManager, never()).createFederatedAssociation(any(User.class), anyString(),
+                    anyString());
+        }
+    }
+
     private FlowUser createTestFlowUser(String username) {
 
         FlowUser flowUser = mock(FlowUser.class);
@@ -1452,7 +1580,7 @@ public class UserProvisioningExecutorTest {
         when(applicationManagementService.getApplicationBasicInfoByResourceId(eq("app-uuid-001"),
                 anyString())).thenReturn(
                 testApp);
-        when(dataHolder.getFederatedAssociationManager()).thenReturn(mock(FederatedAssociationManager.class));
+        when(dataHolder.getFederatedAssociationManager()).thenReturn(federatedAssociationManager);
         when(realmService.getTenantUserRealm(anyInt())).thenReturn(userRealm);
         when(userRealm.getUserStoreManager()).thenReturn(userStoreManager);
         when(userStoreManager.getUserIDFromUserName(anyString())).thenReturn(USER_ID);
